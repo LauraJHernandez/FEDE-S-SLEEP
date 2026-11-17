@@ -26,15 +26,28 @@ create table if not exists public.entries (
  created_at timestamptz not null default now()
 );
 create index if not exists entries_family_time_idx on public.entries(family_id,occurred_at desc);
+-- Security-definer helper avoids recursive RLS checks on family_members.
+create or replace function public.is_family_member(target_family uuid)
+returns boolean language sql stable security definer set search_path=public as $$
+ select exists(select 1 from public.family_members where family_id=target_family and user_id=auth.uid());
+$$;
+revoke all on function public.is_family_member(uuid) from public;
+grant execute on function public.is_family_member(uuid) to authenticated;
 alter table public.families enable row level security;
 alter table public.family_members enable row level security;
 alter table public.entries enable row level security;
-create policy "members read own family" on public.families for select to authenticated using (exists(select 1 from public.family_members m where m.family_id=id and m.user_id=auth.uid()));
-create policy "members read membership" on public.family_members for select to authenticated using (user_id=auth.uid() or exists(select 1 from public.family_members m where m.family_id=family_id and m.user_id=auth.uid()));
-create policy "members read entries" on public.entries for select to authenticated using (exists(select 1 from public.family_members m where m.family_id=entries.family_id and m.user_id=auth.uid()));
-create policy "members insert entries" on public.entries for insert to authenticated with check (created_by=auth.uid() and exists(select 1 from public.family_members m where m.family_id=entries.family_id and m.user_id=auth.uid()));
-create policy "members update entries" on public.entries for update to authenticated using (exists(select 1 from public.family_members m where m.family_id=entries.family_id and m.user_id=auth.uid())) with check (exists(select 1 from public.family_members m where m.family_id=entries.family_id and m.user_id=auth.uid()));
-create policy "members delete entries" on public.entries for delete to authenticated using (exists(select 1 from public.family_members m where m.family_id=entries.family_id and m.user_id=auth.uid()));
+drop policy if exists "members read own family" on public.families;
+drop policy if exists "members read membership" on public.family_members;
+drop policy if exists "members read entries" on public.entries;
+drop policy if exists "members insert entries" on public.entries;
+drop policy if exists "members update entries" on public.entries;
+drop policy if exists "members delete entries" on public.entries;
+create policy "members read own family" on public.families for select to authenticated using (public.is_family_member(id));
+create policy "members read membership" on public.family_members for select to authenticated using (user_id=auth.uid() or public.is_family_member(family_id));
+create policy "members read entries" on public.entries for select to authenticated using (public.is_family_member(family_id));
+create policy "members insert entries" on public.entries for insert to authenticated with check (created_by=auth.uid() and public.is_family_member(family_id));
+create policy "members update entries" on public.entries for update to authenticated using (public.is_family_member(family_id)) with check (public.is_family_member(family_id));
+create policy "members delete entries" on public.entries for delete to authenticated using (public.is_family_member(family_id));
 create or replace function public.create_family(family_name text)
 returns uuid language plpgsql security definer set search_path=public as $$
 declare new_id uuid;
